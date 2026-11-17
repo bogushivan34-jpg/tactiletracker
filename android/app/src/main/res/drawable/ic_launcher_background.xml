@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Coral keycap face with a darker "lip" at the bottom and a soft top gloss (same design as windows/assets/icon.svg). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:pathData="M0,0h108v108h-108z" android:fillColor="#B8300F"/>
+    <path android:pathData="M0,0h108v101h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="54" android:startY="0" android:endX="54" android:endY="101">
+                <item android:offset="0" android:color="#FFFF8059"/>
+                <item android:offset="0.55" android:color="#FFFF4F28"/>
+                <item android:offset="1" android:color="#FFF2441D"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path android:pathData="M20,6h68a14,14 0,0 1,14 14v20a12,12 0,0 1,-12 12h-72a12,12 0,0 1,-12 -12v-20a14,14 0,0 1,14 -14z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="54" android:startY="6" android:endX="54" android:endY="52">
+                <item android:offset="0" android:color="#38FFFFFF"/>
+                <item android:offset="1" android:color="#00FFFFFF"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

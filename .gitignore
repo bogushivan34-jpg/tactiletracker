@@ -1,0 +1,23 @@
+# Original PWA archive (contains env files)
+*.zip
+
+# Secrets
+windows/config.json
+android/local.properties
+android/keystore.properties
+android/keystore/
+*.jks
+*.keystore
+.env
+.env.*
+
+# Build outputs
+windows/bin/
+windows/.testdata/
+android/.gradle/
+android/build/
+android/app/build/
+android/.idea/
+android/.kotlin/
+*.iml
+__pycache__/

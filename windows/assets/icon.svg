@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <!-- Tactile keycap: raised lip + coral face + soft gloss, white check, "Running" wave dots -->
+  <defs>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FF8059"/>
+      <stop offset="0.55" stop-color="#FF4F28"/>
+      <stop offset="1" stop-color="#F2441D"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="40" y="60" width="432" height="420" rx="112" fill="#B8300F"/>
+  <rect x="40" y="32" width="432" height="420" rx="112" fill="url(#face)"/>
+  <rect x="64" y="48" width="384" height="190" rx="92" fill="url(#gloss)"/>
+  <path d="M164 244L230 310L352 184" stroke="#A82A0C" stroke-opacity="0.35" stroke-width="50" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M164 236L230 302L352 176" stroke="#FFFFFF" stroke-width="50" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="216" cy="376" r="14" fill="#FFFFFF" fill-opacity="0.5"/>
+  <circle cx="256" cy="368" r="14" fill="#FFFFFF" fill-opacity="0.75"/>
+  <circle cx="296" cy="374" r="14" fill="#FFFFFF"/>
+</svg>

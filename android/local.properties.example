@@ -1,0 +1,5 @@
+sdk.dir=C\:/Users/YOU/AppData/Local/Android/Sdk
+SUPABASE_URL=https://YOUR-PROJECT.supabase.co
+SUPABASE_KEY=sb_publishable_...
+SUPABASE_BUCKET=attachments
+GEMINI_KEY=

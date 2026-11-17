@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Issues</string>
+    <string name="share_label">Add to Issues</string>
+    <string name="shortcut_new_short">New task</string>
+    <string name="shortcut_new_long">New task</string>
+</resources>

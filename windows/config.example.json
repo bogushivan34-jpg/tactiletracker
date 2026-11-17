@@ -1,0 +1,8 @@
+{
+  "supabaseUrl": "https://YOUR-PROJECT.supabase.co",
+  "supabaseKey": "sb_publishable_...",
+  "supabaseBucket": "attachments",
+  "geminiKey": "",
+  "geminiModels": ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite-preview"],
+  "syncEnabled": true
+}
