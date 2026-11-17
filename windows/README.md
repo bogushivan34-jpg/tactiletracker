@@ -50,7 +50,13 @@ The project carousel (color dot cycles the color, double-click renames), Running
 
 - You can drag image files onto the window to attach them.
 - Deleting a project that still has items now asks you to confirm first.
-- A small chip in the bottom-right corner appears only when you're offline or a sync is slow.
+- **If sync fails, a card appears in the bottom-right corner.** It shows:
+  - why sync failed: no internet, server unreachable (for example, a VPN is needed), server not responding, server error, or the key was rejected
+  - when you last synced, and how many changes are waiting
+  - a **Retry now** button
+
+  Close the card and a small amber "Not synced" chip stays; click the chip to retry. When sync works again, a short "Back online · synced" message appears. The app also retries as soon as your network changes, for example when a VPN connects.
+- A small "Syncing…" chip appears only when a sync is slow.
 - Each edit uploads only the item that changed. Remote changes are pulled when the window gets focus (throttled to every 20 s), every 3 min, or when you press F5. A pull never overwrites an edit that is still uploading.
 
 ## Fonts

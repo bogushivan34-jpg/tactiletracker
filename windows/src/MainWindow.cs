@@ -1,4 +1,4 @@
-// Main window: project carousel, composer, completed drawer, issue list, lightbox, sync chip.
+// Main window: project carousel, composer, completed drawer, issue list, lightbox, sync status card/chip.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -21,6 +21,7 @@ namespace Tactile
     public sealed class Options
     {
         public string DataDir, ConfigPath, SnapshotPath;
+        public int SnapshotDelayMs;
         public bool Offline, ShowCompleted, SelfTest;
         public int Width = 0, Height = 0;
     }
@@ -28,6 +29,7 @@ namespace Tactile
     public sealed class MainWindow : Window
     {
         readonly Options opts;
+        public Options Opts { get { return opts; } }
         readonly Config cfg;
         public readonly AppState State;
         readonly SyncEngine sync;
@@ -770,9 +772,14 @@ namespace Tactile
             SyncList(mainList, mainRows, main, true);
             emptyText.Visibility = main.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             emptyText.Inlines.Clear();
+            if (sync.Problem != null && !State.HasEverSynced)
+                emptyText.Inlines.Add(new System.Windows.Documents.Run("Couldn't load your items from the server yet. They'll appear here once sync works."));
+            else
+            {
             emptyText.Inlines.Add(new System.Windows.Documents.Run("No open items in "));
             emptyText.Inlines.Add(new System.Windows.Documents.Run(proj.Name) { FontWeight = FontWeights.Medium, Foreground = Pal.B(Pal.S600) });
             emptyText.Inlines.Add(new System.Windows.Documents.Run(" yet — add a task or paste an image above."));
+            }
             RefreshComposer();
         }
 
@@ -1256,7 +1263,23 @@ namespace Tactile
             Anim.Fade(lightbox, 0, 140, () => { lightbox.Visibility = Visibility.Collapsed; lightboxFrame.Background = null; lightboxBmp = null; });
         }
 
-        // ================================================================== sync chip
+        // ================================================================== sync status
+        // Three pieces, all bottom-right / bottom-center overlays:
+        //  * syncCard  - shown while sync keeps failing: why, last sync, pending count, Retry, close.
+        //  * syncChip  - compact pill: "Syncing…" during slow syncs, or "Not synced" after the card is closed.
+        //  * noticeToast - dark snackbar for one-off notices ("Back online · synced").
+
+        static readonly string AmberBg = "#FFFBEB", AmberBorder = "#FDE68A", AmberIcon = "#B45309",
+            RoseBg = "#FFF1F2", RoseBorder = "#FECDD3", RoseIcon = "#BE123C";
+
+        readonly Border syncCard = new Border();
+        readonly Border syncCardIcon = new Border();
+        readonly TextBlock syncCardTitle = new TextBlock(), syncCardDetail = new TextBlock(), syncCardMeta = new TextBlock();
+        Btn syncRetry;
+        readonly Border noticeToast = new Border();
+        readonly TextBlock noticeText = new TextBlock();
+        DispatcherTimer noticeTimer, metaTimer;
+        ProblemKind? dismissedKind;
 
         void BuildSyncChip()
         {
@@ -1282,8 +1305,211 @@ namespace Tactile
             syncText.VerticalAlignment = VerticalAlignment.Center;
             sp.Children.Add(syncText);
             syncChip.Child = sp;
-            syncChip.MouseLeftButtonUp += (s, e) => sync.RequestPull();
+            syncChip.MouseLeftButtonUp += (s, e) =>
+            {
+                // Reopen the card if it was closed, and retry.
+                dismissedKind = null;
+                RefreshSyncUi();
+                sync.RequestPull();
+            };
             root.Children.Add(syncChip);
+
+            BuildSyncCard();
+            BuildNoticeToast();
+            sync.ProblemChanged += p => { if (p == null) dismissedKind = null; RefreshSyncUi(); };
+            sync.Notice += ShowNotice;
+            metaTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+            metaTimer.Tick += (s, e) => UpdateSyncMeta();
+        }
+
+        void BuildSyncCard()
+        {
+            syncCard.HorizontalAlignment = HorizontalAlignment.Right;
+            syncCard.VerticalAlignment = VerticalAlignment.Bottom;
+            syncCard.Margin = new Thickness(0, 0, 20, 18);
+            syncCard.Width = 340;
+            syncCard.CornerRadius = new CornerRadius(14);
+            syncCard.BorderThickness = new Thickness(1);
+            syncCard.Padding = new Thickness(14, 12, 6, 12);
+            syncCard.Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 24, ShadowDepth = 6, Direction = 270, Opacity = 0.12, RenderingBias = System.Windows.Media.Effects.RenderingBias.Performance };
+            syncCard.Visibility = Visibility.Collapsed;
+            syncCard.Opacity = 0;
+
+            var g = new Grid();
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            syncCardIcon.VerticalAlignment = VerticalAlignment.Top;
+            syncCardIcon.Margin = new Thickness(0, 1, 10, 0);
+            g.Children.Add(syncCardIcon);
+
+            var col = new StackPanel();
+            Grid.SetColumn(col, 1);
+            syncCardTitle.FontFamily = Fonts.Sans;
+            syncCardTitle.FontSize = 13.5;
+            syncCardTitle.FontWeight = FontWeights.SemiBold;
+            syncCardTitle.Foreground = Pal.B(Pal.S900);
+            syncCardTitle.TextWrapping = TextWrapping.Wrap;
+            col.Children.Add(syncCardTitle);
+            syncCardDetail.FontFamily = Fonts.Sans;
+            syncCardDetail.FontSize = 12.5;
+            syncCardDetail.Foreground = Pal.B(Pal.S600);
+            syncCardDetail.TextWrapping = TextWrapping.Wrap;
+            syncCardDetail.LineHeight = 17;
+            syncCardDetail.Margin = new Thickness(0, 3, 0, 0);
+            col.Children.Add(syncCardDetail);
+            syncCardMeta.FontFamily = Fonts.Mono;
+            syncCardMeta.FontSize = 10.5;
+            syncCardMeta.FontWeight = FontWeights.SemiBold;
+            syncCardMeta.Foreground = Pal.B(Pal.S500);
+            syncCardMeta.TextWrapping = TextWrapping.Wrap;
+            syncCardMeta.Margin = new Thickness(0, 5, 0, 0);
+            col.Children.Add(syncCardMeta);
+
+            syncRetry = new Btn(28, 14, new Thickness(12, 0, 12, 0)) { HoverScale = 1.03, PressScale = 0.94 };
+            syncRetry.HorizontalAlignment = HorizontalAlignment.Left;
+            syncRetry.Margin = new Thickness(0, 9, 0, 0);
+            syncRetry.Tactile(true);
+            syncRetry.Click = () => { sync.RequestPull(); SetRetrying(true); };
+            col.Children.Add(syncRetry);
+            g.Children.Add(col);
+
+            var close = new Btn(28, 14, new Thickness(7, 0, 7, 0)) { HoverScale = 1.08, PressScale = 0.9 };
+            close.VerticalAlignment = VerticalAlignment.Top;
+            close.Margin = new Thickness(4, -4, 0, 0);
+            close.Paint(Brushes.Transparent, Pal.B(Pal.S900, 0.06), Pal.B(Pal.S400), Pal.B(Pal.S700));
+            close.AddIcon("x", 14);
+            close.ToolTip = "Hide (the \"Not synced\" chip stays)";
+            close.Click = () =>
+            {
+                if (sync.Problem != null) dismissedKind = sync.Problem.Kind;
+                RefreshSyncUi();
+            };
+            Grid.SetColumn(close, 2);
+            g.Children.Add(close);
+
+            syncCard.Child = g;
+            root.Children.Add(syncCard);
+        }
+
+        void BuildNoticeToast()
+        {
+            noticeToast.HorizontalAlignment = HorizontalAlignment.Center;
+            noticeToast.VerticalAlignment = VerticalAlignment.Bottom;
+            noticeToast.Margin = new Thickness(20, 0, 20, 18);
+            noticeToast.Padding = new Thickness(14, 8, 14, 8);
+            noticeToast.CornerRadius = new CornerRadius(12);
+            noticeToast.Background = Pal.B(Pal.S900);
+            noticeToast.IsHitTestVisible = false;
+            noticeToast.Opacity = 0;
+            noticeToast.Visibility = Visibility.Collapsed;
+            noticeText.FontFamily = Fonts.Sans;
+            noticeText.FontSize = 12.5;
+            noticeText.FontWeight = FontWeights.Medium;
+            noticeText.Foreground = Brushes.White;
+            noticeText.TextWrapping = TextWrapping.Wrap;
+            noticeToast.Child = noticeText;
+            root.Children.Add(noticeToast);
+        }
+
+        void ShowNotice(string text)
+        {
+            Log.Write("Notice: " + text);
+            noticeText.Text = text;
+            noticeToast.Visibility = Visibility.Visible;
+            Anim.Fade(noticeToast, 1, 160);
+            if (noticeTimer == null)
+            {
+                noticeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3.2) };
+                noticeTimer.Tick += (s, e) =>
+                {
+                    noticeTimer.Stop();
+                    Anim.Fade(noticeToast, 0, 260, () => noticeToast.Visibility = Visibility.Collapsed);
+                };
+            }
+            noticeTimer.Stop();
+            noticeTimer.Start();
+        }
+
+        static string Ago(DateTime utc)
+        {
+            if (utc == DateTime.MinValue) return null;
+            var s = (DateTime.UtcNow - utc).TotalSeconds;
+            if (s < 60) return "just now";
+            if (s < 3600) return (int)(s / 60) + " min ago";
+            if (s < 86400) return (int)(s / 3600) + " h ago";
+            return (int)(s / 86400) + " d ago";
+        }
+
+        void UpdateSyncMeta()
+        {
+            var ago = Ago(State.LastSyncUtc);
+            string meta = ago == null ? "Not synced yet on this PC" : "Last synced " + ago;
+            int pending = State.Outbox.Count;
+            if (pending > 0) meta += " · " + pending + " change" + (pending == 1 ? "" : "s") + " waiting";
+            syncCardMeta.Text = meta;
+        }
+
+        void SetRetrying(bool on)
+        {
+            syncRetry.Clear();
+            var p = sync.Problem;
+            string fg = p != null && p.Serious ? RoseIcon : Pal.S700;
+            syncRetry.Paint(Brushes.White, Pal.B(Pal.S50), Pal.B(Pal.S700), Pal.B(Pal.S900), Pal.B(p != null && p.Serious ? RoseBorder : AmberBorder));
+            if (on)
+            {
+                var ic = Icons.Make("loader", 13, Pal.B(fg), 2);
+                Anim.Spin(ic);
+                syncRetry.AddElement(ic);
+                syncRetry.AddText("Retrying…", 12, FontWeights.SemiBold);
+                syncRetry.Disabled = false;
+            }
+            else
+            {
+                syncRetry.AddIcon("rotate-ccw", 13);
+                syncRetry.AddText("Retry now", 12, FontWeights.SemiBold);
+            }
+        }
+
+        /// Shows the card, the chip, or nothing, from the current problem / dismissal / sync state.
+        void RefreshSyncUi()
+        {
+            var p = sync.Problem;
+            bool cardOn = p != null && dismissedKind != p.Kind;
+            if (p != null)
+            {
+                syncCard.Background = Pal.B(p.Serious ? RoseBg : AmberBg);
+                syncCard.BorderBrush = Pal.B(p.Serious ? RoseBorder : AmberBorder);
+                syncCardIcon.Child = Icons.Make("cloud-off", 18, Pal.B(p.Serious ? RoseIcon : AmberIcon), 2);
+                syncCardTitle.Text = p.Title;
+                syncCardDetail.Text = p.Detail;
+                UpdateSyncMeta();
+                SetRetrying(lastSync == SyncState.Syncing);
+            }
+            if (cardOn)
+            {
+                syncCard.IsHitTestVisible = true;
+                if (syncCard.Visibility != Visibility.Visible) { syncCard.Visibility = Visibility.Visible; Anim.Enter(syncCard, 1); }
+                metaTimer.Start();
+            }
+            else if (syncCard.Visibility == Visibility.Visible)
+            {
+                syncCard.IsHitTestVisible = false;
+                metaTimer.Stop();
+                Anim.Fade(syncCard, 0, 180, () => { if (!syncCard.IsHitTestVisible) syncCard.Visibility = Visibility.Collapsed; });
+            }
+
+            // Chip: "Not synced" when the card is hidden; otherwise only for slow syncs (see OnSyncStatus).
+            if (p != null && !cardOn)
+            {
+                int pending = State.Outbox.Count;
+                ShowChip(true, "cloud-off", pending > 0 ? "Not synced · " + pending + " waiting" : "Not synced · click to retry", true);
+            }
+            else if (p != null || lastSync != SyncState.Syncing)
+                ShowChip(false, null, null, false);
+            // The "couldn't load yet" hint lives in the empty list text.
+            if (emptyText.Visibility == Visibility.Visible) Render(false);
         }
 
         SyncState lastSync = SyncState.Idle;
@@ -1298,22 +1524,23 @@ namespace Tactile
                 chipDelay.Tick += (o, e) =>
                 {
                     chipDelay.Stop();
-                    if (lastSync == SyncState.Syncing) ShowChip(true, "loader", "Syncing…", false);
+                    if (lastSync == SyncState.Syncing && sync.Problem == null) ShowChip(true, "loader", "Syncing…", false);
                 };
             }
             switch (s)
             {
                 case SyncState.Idle:
                     chipDelay.Stop();
-                    ShowChip(false, null, null, false);
+                    if (sync.Problem == null) ShowChip(false, null, null, false);
                     break;
                 case SyncState.Syncing:
                     // Only show if syncing takes noticeably long; keeps the UI calm.
-                    if (!chipDelay.IsEnabled) chipDelay.Start();
+                    if (sync.Problem == null) { if (!chipDelay.IsEnabled) chipDelay.Start(); }
+                    else SetRetrying(true);
                     break;
                 case SyncState.Offline:
                     chipDelay.Stop();
-                    ShowChip(true, "cloud-off", pending > 0 ? "Offline · " + pending + " change" + (pending == 1 ? "" : "s") + " saved locally" : "Offline · showing saved copy", false);
+                    RefreshSyncUi();
                     break;
                 case SyncState.Disabled:
                     ShowChip(opts.Offline && opts.SnapshotPath == null, "cloud-off", "Sync off", false);
@@ -1321,12 +1548,16 @@ namespace Tactile
             }
         }
 
-        void ShowChip(bool show, string icon, string text, bool unused)
+        void ShowChip(bool show, string icon, string text, bool warn)
         {
             if (show)
             {
+                var fg = Pal.B(warn ? AmberIcon : Pal.S500);
                 syncText.Text = text;
-                var ic = Icons.Make(icon, 13, Pal.B(Pal.S500), 2);
+                syncText.Foreground = warn ? Pal.B(AmberIcon) : Pal.B(Pal.S600);
+                syncChip.Background = Pal.B(warn ? AmberBg : Pal.White);
+                syncChip.BorderBrush = Pal.B(warn ? AmberBorder : Pal.S200);
+                var ic = Icons.Make(icon, 13, fg, 2);
                 if (icon == "loader") Anim.Spin(ic);
                 syncIconHost.Child = ic;
                 syncChip.IsHitTestVisible = true;

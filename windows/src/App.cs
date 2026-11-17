@@ -56,6 +56,7 @@ namespace Tactile
                 else if (a == "--config") opts.ConfigPath = Path.GetFullPath(next());
                 else if (a == "--offline") opts.Offline = true;
                 else if (a == "--snapshot") opts.SnapshotPath = Path.GetFullPath(next());
+                else if (a == "--snapshot-delay") int.TryParse(next(), out opts.SnapshotDelayMs);
                 else if (a == "--show-completed") opts.ShowCompleted = true;
                 else if (a == "--selftest") opts.SelfTest = true;
                 else if (a == "--size")
@@ -112,7 +113,8 @@ namespace Tactile
         /// --snapshot: render the window to PNG once images settle, then exit (used for visual checks).
         public static void ScheduleSnapshot(MainWindow w, string path, double startupMs)
         {
-            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(w.State.HasEverSynced ? 1800 : 3500) };
+            int delay = w.Opts.SnapshotDelayMs > 0 ? w.Opts.SnapshotDelayMs : (w.State.HasEverSynced ? 1800 : 3500);
+            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(delay) };
             t.Tick += (s, e) =>
             {
                 t.Stop();

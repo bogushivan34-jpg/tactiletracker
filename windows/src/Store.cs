@@ -26,6 +26,7 @@ namespace Tactile
         public List<OutboxItem> Outbox = new List<OutboxItem>();
         public long ChangeCounter;
         public bool HasEverSynced;
+        public DateTime LastSyncUtc = DateTime.MinValue;
         long seq;
 
         readonly string path;
@@ -65,6 +66,10 @@ namespace Tactile
                     .Select(o => Logic.NormalizeIssue(Json.Obj(o))).Where(i => i != null).ToList();
                 ActiveProjectId = Json.Str(root, "activeProjectId") ?? ActiveProjectId;
                 HasEverSynced = Json.Bool(root, "hasEverSynced");
+                DateTime last;
+                var lastStr = Json.Str(root, "lastSyncUtc");
+                if (lastStr != null && DateTime.TryParse(lastStr, System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.RoundtripKind, out last)) LastSyncUtc = last.ToUniversalTime();
                 Outbox = (Json.Arr(Json.Get(root, "outbox")) ?? new List<object>())
                     .Select(Json.Obj).Where(o => o != null && Json.Str(o, "key") != null)
                     .Select(o => new OutboxItem { Key = Json.Str(o, "key"), Seq = (long)(Json.Num(o, "seq") ?? 0) }).ToList();
@@ -84,6 +89,7 @@ namespace Tactile
             root["version"] = 1;
             root["activeProjectId"] = ActiveProjectId;
             root["hasEverSynced"] = HasEverSynced;
+            if (LastSyncUtc != DateTime.MinValue) root["lastSyncUtc"] = LastSyncUtc.ToString("o");
             root["projects"] = Projects.Select(p => (object)Logic.ProjectToDict(p)).ToList();
             root["issues"] = Issues.Select(i => (object)Logic.IssueToDict(i)).ToList();
             root["outbox"] = Outbox.Select(o =>
@@ -151,6 +157,70 @@ namespace Tactile
 
     public enum SyncState { Idle, Syncing, Offline, Disabled }
 
+    public enum ProblemKind { NoInternet, Unreachable, Timeout, Secure, Server, Auth, Rejected, Other }
+
+    /// Why the last sync attempt failed, in words a user can act on.
+    public sealed class SyncProblem
+    {
+        public ProblemKind Kind;
+        public string Title, Detail;
+        public DateTime SinceUtc;
+
+        public bool Serious { get { return Kind == ProblemKind.Auth || Kind == ProblemKind.Rejected; } }
+
+        const string Vpn = " Try turning on your VPN.";
+
+        static SyncProblem Make(ProblemKind k, string title, string detail)
+        {
+            return new SyncProblem { Kind = k, Title = title, Detail = detail, SinceUtc = DateTime.UtcNow };
+        }
+
+        public static SyncProblem From(Exception e, bool networkUp)
+        {
+            int code = e is TransientNetException ? ((TransientNetException)e).Code
+                     : e is RejectedNetException ? ((RejectedNetException)e).Code : 0;
+            System.Net.WebException web = null;
+            for (var x = e; x != null && web == null; x = x.InnerException) web = x as System.Net.WebException;
+
+            if (!networkUp)
+                return Make(ProblemKind.NoInternet, "No internet connection",
+                    "This PC is offline. Changes are saved here and will sync when you're back online.");
+            if (code == 401 || code == 403)
+                return Make(ProblemKind.Auth, "Access denied",
+                    "The server rejected the app's key (HTTP " + code + "). Check supabaseKey in config.json.");
+            if (code > 0 && e is TransientNetException)
+                return Make(ProblemKind.Server, "Server error", "The sync server returned HTTP " + code + ". It will retry automatically.");
+            if (e is RejectedNetException)
+                return Make(ProblemKind.Rejected, "Server rejected the request", "HTTP " + code + ". Your data is still saved on this PC.");
+            if (web != null)
+            {
+                switch (web.Status)
+                {
+                    case System.Net.WebExceptionStatus.NameResolutionFailure:
+                    case System.Net.WebExceptionStatus.ProxyNameResolutionFailure:
+                        return Make(ProblemKind.Unreachable, "Can't reach the server",
+                            "The sync server's address couldn't be found. It may be blocked on this network." + Vpn);
+                    case System.Net.WebExceptionStatus.Timeout:
+                        return Make(ProblemKind.Timeout, "Server isn't responding",
+                            "The connection timed out. The sync server may be blocked on this network." + Vpn);
+                    case System.Net.WebExceptionStatus.ConnectFailure:
+                        return Make(ProblemKind.Unreachable, "Can't connect to the server",
+                            "The connection was refused. Check your connection, or try turning on your VPN.");
+                    case System.Net.WebExceptionStatus.SecureChannelFailure:
+                    case System.Net.WebExceptionStatus.TrustFailure:
+                        return Make(ProblemKind.Secure, "Secure connection failed",
+                            "The secure connection to the sync server failed. This network may be filtering traffic." + Vpn);
+                    default:
+                        return Make(ProblemKind.Unreachable, "Connection dropped",
+                            "The connection to the sync server was cut off (" + web.Status + "). This network may be blocking it." + Vpn);
+                }
+            }
+            string msg = e == null ? "Unknown error." : e.Message;
+            if (msg.Length > 160) msg = msg.Substring(0, 160) + "…";
+            return Make(ProblemKind.Other, "Sync failed", msg);
+        }
+    }
+
     public sealed class SyncEngine
     {
         readonly AppState state;
@@ -162,6 +232,14 @@ namespace Tactile
         int failures;
 
         public event Action<SyncState, int> StatusChanged;
+        /// Raised on the UI thread when a failure starts, changes kind, or clears (null).
+        public event Action<SyncProblem> ProblemChanged;
+        /// Raised on the UI thread for one-off notices ("Back online", "A change was rejected").
+        public event Action<string> Notice;
+        /// Current problem; read on the UI thread only.
+        public SyncProblem Problem;
+        volatile bool problemActive;
+        Exception lastFailure;
         /// Raised on the UI thread after remote data replaced local state.
         public event Action Pulled;
 
@@ -178,6 +256,9 @@ namespace Tactile
         public void Start()
         {
             if (!cfg.SyncEnabled) { Report(SyncState.Disabled); return; }
+            // Retry right away when a network or VPN comes up instead of waiting out the backoff.
+            System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += (s, e) => { if (problemActive) RequestPull(); };
+            System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged += (s, e) => { if (problemActive) RequestPull(); };
             var t = new Thread(Loop) { IsBackground = true, Name = "sync", Priority = ThreadPriority.BelowNormal };
             t.Start();
         }
@@ -208,21 +289,24 @@ namespace Tactile
             {
                 try
                 {
+                    lastFailure = null;
                     bool ok = Flush();
                     if (ok && pullRequested)
                     {
                         pullRequested = false;
-                        Pull();
+                        ok = Pull();
                     }
                     if (ok)
                     {
                         failures = 0;
+                        ReportSuccess();
                         Report(SyncState.Idle);
                         signal.WaitOne();
                     }
                     else
                     {
                         failures++;
+                        ReportProblem(lastFailure);
                         Report(SyncState.Offline);
                         int[] backoff = { 2000, 4000, 8000, 15000, 30000, 60000 };
                         signal.WaitOne(backoff[Math.Min(failures - 1, backoff.Length - 1)]);
@@ -276,12 +360,16 @@ namespace Tactile
                 catch (TransientNetException ex)
                 {
                     Log.Write("Sync deferred (" + head.Key + "): " + ex.Message);
+                    lastFailure = ex;
                     return false;
                 }
                 catch (Exception ex)
                 {
                     // Permanent rejection (e.g. 4xx). Drop it so the queue never wedges; local copy stays intact.
                     Log.Write("Sync rejected (" + head.Key + "): " + ex.Message);
+                    var rej = ex as RejectedNetException;
+                    var note = "The server rejected a change" + (rej != null ? " (HTTP " + rej.Code + ")" : "") + ". It's kept on this PC only.";
+                    ui.BeginInvoke(new Action(() => { var h = Notice; if (h != null) h(note); }));
                 }
 
                 var done = head;
@@ -294,7 +382,41 @@ namespace Tactile
             }
         }
 
-        void Pull()
+        void ReportSuccess()
+        {
+            problemActive = false;
+            ui.BeginInvoke(new Action(() =>
+            {
+                state.LastSyncUtc = DateTime.UtcNow;
+                state.SaveSoon();
+                if (Problem == null) return;
+                Problem = null;
+                var h = ProblemChanged;
+                if (h != null) h(null);
+                var n = Notice;
+                if (n != null) n("Back online · synced");
+            }));
+        }
+
+        void ReportProblem(Exception ex)
+        {
+            bool net = true;
+            try { net = System.Net.NetworkInformation.NetworkInterface.GetIsNetworkAvailable(); } catch { }
+            var p = SyncProblem.From(ex, net);
+            problemActive = true;
+            ui.BeginInvoke(new Action(() =>
+            {
+                // Keep the original "since" time while the same kind of failure repeats.
+                if (Problem != null && Problem.Kind == p.Kind) p.SinceUtc = Problem.SinceUtc;
+                bool changed = Problem == null || Problem.Kind != p.Kind || Problem.Detail != p.Detail;
+                Problem = p;
+                var h = ProblemChanged;
+                if (h != null && changed) h(p);
+            }));
+        }
+
+        /// Returns false when the fetch failed (the reason is in lastFailure).
+        bool Pull()
         {
             long version = 0;
             ui.Invoke(new Action(() => version = state.ChangeCounter));
@@ -307,13 +429,12 @@ namespace Tactile
                 catch (InvalidOperationException ex) { Log.Write("Projects table unavailable: " + ex.Message); }
                 issueRows = sb.Select("issues", "select=*&order=created_at.desc");
             }
-            catch (TransientNetException ex)
+            catch (Exception ex)
             {
                 Log.Write("Pull failed: " + ex.Message);
                 pullRequested = true;
-                failures++;
-                Report(SyncState.Offline);
-                return;
+                lastFailure = ex;
+                return false;
             }
 
             var remoteProjects = projectRows == null ? null :
@@ -346,6 +467,7 @@ namespace Tactile
                 var h = Pulled;
                 if (h != null) h();
             }));
+            return true;
         }
     }
 

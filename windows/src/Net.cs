@@ -45,7 +45,15 @@ namespace Tactile
     /// Thrown for errors worth retrying (offline, timeouts, 5xx, 429).
     public sealed class TransientNetException : Exception
     {
-        public TransientNetException(string msg, Exception inner) : base(msg, inner) { }
+        public readonly int Code;
+        public TransientNetException(string msg, Exception inner, int code = 0) : base(msg, inner) { Code = code; }
+    }
+
+    /// Thrown for permanent HTTP errors (4xx other than 408/429).
+    public sealed class RejectedNetException : InvalidOperationException
+    {
+        public readonly int Code;
+        public RejectedNetException(string msg, Exception inner, int code) : base(msg, inner) { Code = code; }
     }
 
     public static class Http
@@ -106,8 +114,8 @@ namespace Tactile
                 string text = "";
                 try { text = Encoding.UTF8.GetString(ReadAll(resp.GetResponseStream())); } catch { }
                 resp.Close();
-                if (code >= 500 || code == 429 || code == 408) throw new TransientNetException("HTTP " + code + ": " + text, ex);
-                throw new InvalidOperationException("HTTP " + code + ": " + text, ex);
+                if (code >= 500 || code == 429 || code == 408) throw new TransientNetException("HTTP " + code + ": " + text, ex, code);
+                throw new RejectedNetException("HTTP " + code + ": " + text, ex, code);
             }
         }
 
@@ -138,7 +146,7 @@ namespace Tactile
 
         public List<Dictionary<string, object>> Select(string table, string query)
         {
-            string text = Http.Send("GET", cfg.SupabaseUrl + "/rest/v1/" + table + "?" + query, Headers(null), null, null, 30000);
+            string text = Http.Send("GET", cfg.SupabaseUrl + "/rest/v1/" + table + "?" + query, Headers(null), null, null, 15000);
             var arr = Json.Arr(Json.Parse(text)) ?? new List<object>();
             return arr.Select(Json.Obj).Where(o => o != null).ToList();
         }
@@ -147,7 +155,7 @@ namespace Tactile
         {
             byte[] body = Encoding.UTF8.GetBytes(Json.Write(row));
             Http.Send("POST", cfg.SupabaseUrl + "/rest/v1/" + table + "?on_conflict=id",
-                Headers("resolution=merge-duplicates,return=minimal"), body, "application/json", 30000);
+                Headers("resolution=merge-duplicates,return=minimal"), body, "application/json", 15000);
         }
 
         public void Delete(string table, string id)
