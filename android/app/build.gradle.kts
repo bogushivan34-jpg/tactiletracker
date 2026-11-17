@@ -11,7 +11,9 @@ val local = Properties().apply {
     val f = rootProject.file("local.properties")
     if (f.exists()) f.inputStream().use { load(it) }
 }
-fun prop(name: String, default: String = "") = (local.getProperty(name) ?: default).replace("\"", "\\\"")
+// A -P<NAME>=... command-line property overrides local.properties (e.g. -PGEMINI_KEY= for a public build).
+fun prop(name: String, default: String = "") =
+    ((findProperty(name) as String?) ?: local.getProperty(name) ?: default).replace("\"", "\\\"")
 
 val keystore = Properties().apply {
     val f = rootProject.file("keystore.properties")
