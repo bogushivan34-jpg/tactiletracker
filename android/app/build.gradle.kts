@@ -28,8 +28,8 @@ android {
         applicationId = "com.tactile.issues"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
         buildConfigField("String", "SUPABASE_URL", "\"${prop("SUPABASE_URL")}\"")
         buildConfigField("String", "SUPABASE_KEY", "\"${prop("SUPABASE_KEY")}\"")
         buildConfigField("String", "SUPABASE_BUCKET", "\"${prop("SUPABASE_BUCKET", "attachments")}\"")

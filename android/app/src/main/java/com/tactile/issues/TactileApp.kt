@@ -2,6 +2,9 @@ package com.tactile.issues
 
 import android.app.Application
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -36,8 +39,26 @@ class TactileApp : Application() {
         store = Store(File(filesDir, "tactile"), scope)
         store.load()
         api = SupabaseApi(BuildConfig.SUPABASE_URL, BuildConfig.SUPABASE_KEY, BuildConfig.SUPABASE_BUCKET)
-        sync = SyncEngine(store, if (BuildConfig.SUPABASE_KEY.isNotBlank()) api else null, scope)
+        val prefs = getSharedPreferences("sync", MODE_PRIVATE)
+        sync = SyncEngine(store, if (BuildConfig.SUPABASE_KEY.isNotBlank()) api else null, scope, prefs.getLong("lastSyncMs", 0L))
         sync.log = { Log.i("TactileSync", it) }
+        sync.onSynced = { prefs.edit().putLong("lastSyncMs", it).apply() }
+        val cm = getSystemService(ConnectivityManager::class.java)
+        sync.networkAvailable = {
+            runCatching {
+                val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+                caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            }.getOrDefault(true)
+        }
+        // Retry right away when a network (or a VPN) comes up instead of waiting out the backoff.
+        runCatching {
+            cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) { if (sync.problem.value != null) sync.requestPull() }
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                    if (sync.problem.value != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) sync.requestPull()
+                }
+            })
+        }
         gemini = Gemini(BuildConfig.GEMINI_KEY)
         store.onChanged = { sync.kick() }
         Sound.init(this)

@@ -120,6 +120,12 @@ fun MainScreen(app: TactileApp, ctl: Controller) {
     val data by app.store.state.collectAsState()
     val extracting by ctl.extracting.collectAsState()
     val sync by app.sync.status.collectAsState()
+    val problem by app.sync.problem.collectAsState()
+    val lastSync by app.sync.lastSyncMs.collectAsState()
+    // The banner can be closed; it comes back if the failure changes kind (e.g. VPN off → no internet).
+    var dismissedKind by remember { mutableStateOf<com.tactile.issues.data.SyncProblem.Kind?>(null) }
+    LaunchedEffect(problem?.kind) { if (problem == null) dismissedKind = null }
+    val bannerVisible = problem != null && problem?.kind != dismissedKind
     var preview by remember { mutableStateOf<String?>(null) }
     var showCompleted by rememberSaveable { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
@@ -132,6 +138,13 @@ fun MainScreen(app: TactileApp, ctl: Controller) {
             snackbar.currentSnackbarData?.dismiss()
             val r = snackbar.showSnackbar("Deleted", actionLabel = "Undo", duration = SnackbarDuration.Short)
             if (r == SnackbarResult.ActionPerformed) ctl.undoDelete()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        app.sync.events.collect { msg ->
+            snackbar.currentSnackbarData?.dismiss()
+            snackbar.showSnackbar(msg, duration = SnackbarDuration.Short)
         }
     }
 
@@ -148,8 +161,19 @@ fun MainScreen(app: TactileApp, ctl: Controller) {
         ) {
             Column(Modifier.widthIn(max = 760.dp).fillMaxSize().statusBarsPadding()) {
                 Carousel(data, ctl)
-                Header(project, data, sync, onCompleted = { Sound.expand(true); showCompleted = true }, onRefresh = { app.sync.requestPull() })
-                IssueList(data, ctl, extracting, onPreview = { preview = it }, onDelete = onDelete, refreshing = sync == SyncState.Syncing, onRefresh = { app.sync.requestPull() }, modifier = Modifier.weight(1f))
+                Header(
+                    project, data, showSyncPill = problem != null && !bannerVisible,
+                    onCompleted = { Sound.expand(true); showCompleted = true },
+                    onSyncPill = { dismissedKind = null; app.sync.requestPull() },
+                )
+                SyncBanner(
+                    problem, bannerVisible, retrying = sync == SyncState.Syncing, lastSyncMs = lastSync, pending = data.outbox.size,
+                    onRetry = { app.sync.requestPull() }, onDismiss = { dismissedKind = problem?.kind },
+                )
+                val emptyHint = if (problem != null && lastSync == 0L)
+                    "Couldn't load your items from the server yet. They'll appear here once sync works."
+                else null
+                IssueList(data, ctl, extracting, onPreview = { preview = it }, onDelete = onDelete, refreshing = sync == SyncState.Syncing, onRefresh = { app.sync.requestPull() }, emptyHint = emptyHint, modifier = Modifier.weight(1f))
                 Composer(ctl, Modifier.navigationBarsPadding().imePadding())
             }
             SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().imePadding().padding(bottom = 72.dp)) { d ->
@@ -291,7 +315,7 @@ private fun NameDialog(title: String, initial: String, action: String, onDismiss
 // ================================================================== header
 
 @Composable
-private fun Header(project: Project, data: AppData, sync: SyncState, onCompleted: () -> Unit, onRefresh: () -> Unit) {
+private fun Header(project: Project, data: AppData, showSyncPill: Boolean, onCompleted: () -> Unit, onSyncPill: () -> Unit) {
     val completed = data.issues.count { it.projectId == project.id && it.completed }
     val pending = data.outbox.size
     Row(
@@ -300,12 +324,13 @@ private fun Header(project: Project, data: AppData, sync: SyncState, onCompleted
         }.padding(bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        val offlineAlpha by animateFloatAsState(if (sync == SyncState.Offline) 1f else 0f, tween(220), label = "offline")
+        // Compact "not synced" chip, shown once the full banner has been closed; tapping it retries and reopens the banner.
+        val offlineAlpha by animateFloatAsState(if (showSyncPill) 1f else 0f, tween(220), label = "offline")
         Box(Modifier.weight(1f).graphicsLayer { alpha = offlineAlpha }) {
             if (offlineAlpha > 0f) {
-                Pill(onRefresh, height = 26.dp, hPad = 8.dp) {
-                    Ico(Icons.cloudOff, 13.dp, Slate.s500)
-                    PillText(if (pending > 0) "Offline · $pending saved locally" else "Offline", Slate.s500, 11.5.sp, FontWeight.Medium)
+                Pill(onSyncPill, height = 26.dp, hPad = 8.dp) {
+                    Ico(Icons.cloudOff, 13.dp, Color(0xFFB45309))
+                    PillText(if (pending > 0) "Not synced · $pending waiting" else "Not synced", Color(0xFFB45309), 11.5.sp, FontWeight.Medium)
                 }
             }
         }
@@ -325,7 +350,7 @@ private fun Header(project: Project, data: AppData, sync: SyncState, onCompleted
 private fun IssueList(
     data: AppData, ctl: Controller, extracting: Set<String>,
     onPreview: (String) -> Unit, onDelete: (String) -> Unit,
-    refreshing: Boolean, onRefresh: () -> Unit, modifier: Modifier,
+    refreshing: Boolean, onRefresh: () -> Unit, emptyHint: String?, modifier: Modifier,
 ) {
     val project = data.activeProject
     val main = remember(data.issues, project.id) { Logic.visibleMain(data.issues.filter { it.projectId == project.id }) }
@@ -346,7 +371,7 @@ private fun IssueList(
         if (main.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                 Text(
-                    "No open items in ${project.name} yet — add a task below or share one from any app.",
+                    emptyHint ?: "No open items in ${project.name} yet — add a task below or share one from any app.",
                     style = text(13.5.sp, color = Slate.s400), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
             }
